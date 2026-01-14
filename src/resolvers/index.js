@@ -162,15 +162,19 @@ const resolvers = {
     
     // Delete a tournament
     deleteTournament: async (_, { id }) => {
-      const tournament = await Tournament.findByIdAndDelete(id);
+      // Verify tournament exists first
+      const tournament = await Tournament.findById(id);
       if (!tournament) {
         throw new GraphQLError('Tournament not found', {
           extensions: { code: 'NOT_FOUND' }
         });
       }
       
-      // Also delete all matches for this tournament
+      // Delete all matches for this tournament first
       await Match.deleteMany({ tournament: id });
+      
+      // Then delete the tournament
+      await Tournament.findByIdAndDelete(id);
       
       return true;
     },
