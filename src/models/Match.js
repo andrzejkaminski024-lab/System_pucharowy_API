@@ -1,13 +1,13 @@
 const mongoose = require('mongoose');
 
 const matchSchema = new mongoose.Schema({
-  tournament: {
+  bracket: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Tournament',
+    ref: 'Bracket',
     required: true
   },
   round: {
-    type: String,
+    type: Number,
     required: true
   },
   player1: {
@@ -20,26 +20,10 @@ const matchSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  score1: {
-    type: Number,
-    default: null
-  },
-  score2: {
-    type: Number,
-    default: null
-  },
   winner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null
-  },
-  status: {
-    type: String,
-    enum: ['scheduled', 'ongoing', 'completed'],
-    default: 'scheduled'
-  },
-  matchDate: {
-    type: Date
   },
   createdAt: {
     type: Date,

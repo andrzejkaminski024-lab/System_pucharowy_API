@@ -1,7 +1,8 @@
 const typeDefs = `#graphql
   type User {
     id: ID!
-    username: String!
+    firstName: String!
+    lastName: String!
     email: String!
     createdAt: String!
   }
@@ -9,25 +10,27 @@ const typeDefs = `#graphql
   type Tournament {
     id: ID!
     name: String!
-    description: String
     startDate: String
-    endDate: String
     status: String!
-    createdBy: User
+    participants: [User!]!
+    bracket: Bracket
+    createdAt: String!
+  }
+
+  type Bracket {
+    id: ID!
+    tournament: Tournament!
+    matches: [Match!]!
     createdAt: String!
   }
 
   type Match {
     id: ID!
-    tournament: Tournament!
-    round: String!
+    bracket: Bracket!
+    round: Int!
     player1: User!
     player2: User!
-    score1: Int
-    score2: Int
     winner: User
-    status: String!
-    matchDate: String
     createdAt: String!
   }
 
@@ -46,8 +49,11 @@ const typeDefs = `#graphql
     # Get a specific tournament
     tournament(id: ID!): Tournament
     
-    # Get all matches for a tournament
-    matchesByTournament(tournamentId: ID!): [Match!]!
+    # Get bracket for a tournament
+    bracket(tournamentId: ID!): Bracket
+    
+    # Get matches for a specific round in a bracket
+    getMatchesForRound(bracketId: ID!, round: Int!): [Match!]!
     
     # Get current user info (requires authentication)
     me: User
@@ -55,18 +61,20 @@ const typeDefs = `#graphql
 
   type Mutation {
     # Authentication
-    register(username: String!, email: String!, password: String!): AuthPayload!
+    register(firstName: String!, lastName: String!, email: String!, password: String!): AuthPayload!
     login(email: String!, password: String!): AuthPayload!
     
     # Tournament management
-    createTournament(name: String!, description: String, startDate: String, endDate: String): Tournament!
-    updateTournament(id: ID!, name: String, description: String, startDate: String, endDate: String, status: String): Tournament!
-    deleteTournament(id: ID!): Boolean!
+    createTournament(name: String!, startDate: String): Tournament!
+    addParticipant(tournamentId: ID!, userId: ID!): Tournament!
+    startTournament(tournamentId: ID!): Tournament!
+    finishTournament(tournamentId: ID!): Tournament!
+    
+    # Bracket management
+    generateBracket(tournamentId: ID!): Bracket!
     
     # Match management
-    createMatch(tournamentId: ID!, round: String!, player1Id: ID!, player2Id: ID!, matchDate: String): Match!
-    updateMatch(id: ID!, score1: Int, score2: Int, winnerId: ID, status: String): Match!
-    deleteMatch(id: ID!): Boolean!
+    playMatch(matchId: ID!, winnerId: ID!): Match!
   }
 `;
 

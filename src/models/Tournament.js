@@ -6,14 +6,7 @@ const tournamentSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
-  description: {
-    type: String,
-    trim: true
-  },
   startDate: {
-    type: Date
-  },
-  endDate: {
     type: Date
   },
   status: {
@@ -21,10 +14,10 @@ const tournamentSchema = new mongoose.Schema({
     enum: ['upcoming', 'ongoing', 'completed'],
     default: 'upcoming'
   },
-  createdBy: {
+  participants: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
-  },
+  }],
   createdAt: {
     type: Date,
     default: Date.now

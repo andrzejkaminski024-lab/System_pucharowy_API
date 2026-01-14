@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Tournament = require('../models/Tournament');
 const Match = require('../models/Match');
+const Bracket = require('../models/Bracket');
 const { generateToken } = require('../utils/jwt');
 const { GraphQLError } = require('graphql');
 
@@ -21,11 +22,11 @@ const resolvers = {
           { player2: user._id }
         ]
       })
-        .populate('tournament')
+        .populate('bracket')
         .populate('player1')
         .populate('player2')
         .populate('winner')
-        .sort({ createdAt: -1 });
+        .sort({ round: 1, createdAt: 1 });
       
       return matches;
     },
@@ -33,23 +34,55 @@ const resolvers = {
     // Get all tournaments
     tournaments: async () => {
       return await Tournament.find()
-        .populate('createdBy')
+        .populate('participants')
         .sort({ createdAt: -1 });
     },
     
     // Get a specific tournament
     tournament: async (_, { id }) => {
-      return await Tournament.findById(id).populate('createdBy');
+      return await Tournament.findById(id).populate('participants');
     },
     
-    // Get all matches for a tournament
-    matchesByTournament: async (_, { tournamentId }) => {
-      return await Match.find({ tournament: tournamentId })
+    // Get bracket for a tournament
+    bracket: async (_, { tournamentId }) => {
+      const bracket = await Bracket.findOne({ tournament: tournamentId })
         .populate('tournament')
+        .populate({
+          path: 'matches',
+          populate: [
+            { path: 'player1' },
+            { path: 'player2' },
+            { path: 'winner' }
+          ]
+        });
+      
+      if (!bracket) {
+        throw new GraphQLError('Bracket not found for this tournament', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      return bracket;
+    },
+    
+    // Get matches for a specific round
+    getMatchesForRound: async (_, { bracketId, round }) => {
+      const bracket = await Bracket.findById(bracketId);
+      if (!bracket) {
+        throw new GraphQLError('Bracket not found', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      return await Match.find({
+        bracket: bracketId,
+        round: round
+      })
+        .populate('bracket')
         .populate('player1')
         .populate('player2')
         .populate('winner')
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: 1 });
     },
     
     // Get current user info
@@ -63,13 +96,28 @@ const resolvers = {
     }
   },
   
+  // Field resolvers
+  Tournament: {
+    bracket: async (parent) => {
+      return await Bracket.findOne({ tournament: parent._id })
+        .populate({
+          path: 'matches',
+          populate: [
+            { path: 'player1' },
+            { path: 'player2' },
+            { path: 'winner' }
+          ]
+        });
+    }
+  },
+  
   Mutation: {
     // Register a new user
-    register: async (_, { username, email, password }) => {
+    register: async (_, { firstName, lastName, email, password }) => {
       // Check if user already exists
-      const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+      const existingUser = await User.findOne({ email });
       if (existingUser) {
-        throw new GraphQLError('User with this email or username already exists', {
+        throw new GraphQLError('User with this email already exists', {
           extensions: { code: 'BAD_USER_INPUT' }
         });
       }
@@ -79,7 +127,8 @@ const resolvers = {
       
       // Create user
       const user = new User({
-        username,
+        firstName,
+        lastName,
         email,
         password: hashedPassword
       });
@@ -123,65 +172,19 @@ const resolvers = {
     },
     
     // Create a tournament
-    createTournament: async (_, { name, description, startDate, endDate }, { user }) => {
+    createTournament: async (_, { name, startDate }) => {
       const tournament = new Tournament({
         name,
-        description,
         startDate,
-        endDate,
-        createdBy: user ? user._id : null
+        participants: []
       });
       
       await tournament.save();
-      return await Tournament.findById(tournament._id).populate('createdBy');
+      return await Tournament.findById(tournament._id).populate('participants');
     },
     
-    // Update a tournament
-    updateTournament: async (_, { id, name, description, startDate, endDate, status }) => {
-      const updateData = {};
-      if (name !== undefined) updateData.name = name;
-      if (description !== undefined) updateData.description = description;
-      if (startDate !== undefined) updateData.startDate = startDate;
-      if (endDate !== undefined) updateData.endDate = endDate;
-      if (status !== undefined) updateData.status = status;
-      
-      const tournament = await Tournament.findByIdAndUpdate(
-        id,
-        updateData,
-        { new: true }
-      ).populate('createdBy');
-      
-      if (!tournament) {
-        throw new GraphQLError('Tournament not found', {
-          extensions: { code: 'NOT_FOUND' }
-        });
-      }
-      
-      return tournament;
-    },
-    
-    // Delete a tournament
-    deleteTournament: async (_, { id }) => {
-      // Verify tournament exists first
-      const tournament = await Tournament.findById(id);
-      if (!tournament) {
-        throw new GraphQLError('Tournament not found', {
-          extensions: { code: 'NOT_FOUND' }
-        });
-      }
-      
-      // Delete all matches for this tournament first
-      await Match.deleteMany({ tournament: id });
-      
-      // Then delete the tournament
-      await Tournament.findByIdAndDelete(id);
-      
-      return true;
-    },
-    
-    // Create a match
-    createMatch: async (_, { tournamentId, round, player1Id, player2Id, matchDate }) => {
-      // Verify tournament exists
+    // Add participant to tournament
+    addParticipant: async (_, { tournamentId, userId }) => {
       const tournament = await Tournament.findById(tournamentId);
       if (!tournament) {
         throw new GraphQLError('Tournament not found', {
@@ -189,69 +192,213 @@ const resolvers = {
         });
       }
       
-      // Verify players exist
-      const player1 = await User.findById(player1Id);
-      const player2 = await User.findById(player2Id);
+      // Check if tournament has started
+      if (tournament.status !== 'upcoming') {
+        throw new GraphQLError('Cannot add participants to a tournament that has already started', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
       
-      if (!player1 || !player2) {
-        throw new GraphQLError('One or both players not found', {
+      // Check if user exists
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new GraphQLError('User not found', {
           extensions: { code: 'NOT_FOUND' }
         });
       }
       
-      const match = new Match({
+      // Check if user is already a participant
+      if (tournament.participants.includes(userId)) {
+        throw new GraphQLError('User is already a participant', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      tournament.participants.push(userId);
+      await tournament.save();
+      
+      return await Tournament.findById(tournamentId).populate('participants');
+    },
+    
+    // Start tournament
+    startTournament: async (_, { tournamentId }) => {
+      const tournament = await Tournament.findById(tournamentId);
+      if (!tournament) {
+        throw new GraphQLError('Tournament not found', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      if (tournament.status !== 'upcoming') {
+        throw new GraphQLError('Tournament has already started or finished', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      tournament.status = 'ongoing';
+      await tournament.save();
+      
+      return await Tournament.findById(tournamentId).populate('participants');
+    },
+    
+    // Finish tournament
+    finishTournament: async (_, { tournamentId }) => {
+      const tournament = await Tournament.findById(tournamentId);
+      if (!tournament) {
+        throw new GraphQLError('Tournament not found', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      if (tournament.status === 'completed') {
+        throw new GraphQLError('Tournament is already finished', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      tournament.status = 'completed';
+      await tournament.save();
+      
+      return await Tournament.findById(tournamentId).populate('participants');
+    },
+    
+    // Generate bracket for tournament
+    generateBracket: async (_, { tournamentId }) => {
+      const tournament = await Tournament.findById(tournamentId).populate('participants');
+      if (!tournament) {
+        throw new GraphQLError('Tournament not found', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      // Check if bracket already exists
+      const existingBracket = await Bracket.findOne({ tournament: tournamentId });
+      if (existingBracket) {
+        throw new GraphQLError('Bracket already exists for this tournament', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      const participants = tournament.participants;
+      
+      if (participants.length < 2) {
+        throw new GraphQLError('Tournament must have at least 2 participants', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      // Check if number of participants is a power of 2
+      const isPowerOf2 = (n) => n > 0 && (n & (n - 1)) === 0;
+      if (!isPowerOf2(participants.length)) {
+        throw new GraphQLError('Number of participants must be a power of 2', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      // Create bracket
+      const bracket = new Bracket({
         tournament: tournamentId,
-        round,
-        player1: player1Id,
-        player2: player2Id,
-        matchDate
+        matches: []
+      });
+      await bracket.save();
+      
+      // Generate first round matches
+      const matches = [];
+      for (let i = 0; i < participants.length; i += 2) {
+        const match = new Match({
+          bracket: bracket._id,
+          round: 1,
+          player1: participants[i]._id,
+          player2: participants[i + 1]._id
+        });
+        await match.save();
+        matches.push(match._id);
+      }
+      
+      bracket.matches = matches;
+      await bracket.save();
+      
+      return await Bracket.findById(bracket._id)
+        .populate('tournament')
+        .populate({
+          path: 'matches',
+          populate: [
+            { path: 'player1' },
+            { path: 'player2' },
+            { path: 'winner' }
+          ]
+        });
+    },
+    
+    // Play a match (set winner)
+    playMatch: async (_, { matchId, winnerId }) => {
+      const match = await Match.findById(matchId)
+        .populate('bracket')
+        .populate('player1')
+        .populate('player2');
+        
+      if (!match) {
+        throw new GraphQLError('Match not found', {
+          extensions: { code: 'NOT_FOUND' }
+        });
+      }
+      
+      // Verify winner is one of the players
+      if (winnerId !== match.player1._id.toString() && winnerId !== match.player2._id.toString()) {
+        throw new GraphQLError('Winner must be one of the match players', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      // Check if match already has a winner
+      if (match.winner) {
+        throw new GraphQLError('Match already has a winner', {
+          extensions: { code: 'BAD_USER_INPUT' }
+        });
+      }
+      
+      match.winner = winnerId;
+      await match.save();
+      
+      // Check if we need to create next round match
+      const bracket = await Bracket.findById(match.bracket._id).populate('matches');
+      const currentRoundMatches = await Match.find({
+        bracket: bracket._id,
+        round: match.round
       });
       
-      await match.save();
-      return await Match.findById(match._id)
-        .populate('tournament')
+      // Check if all matches in current round are completed
+      const allCompleted = currentRoundMatches.every(m => m.winner != null);
+      
+      if (allCompleted && currentRoundMatches.length > 1) {
+        // Create next round matches
+        const winners = currentRoundMatches.map(m => m.winner);
+        const nextRound = match.round + 1;
+        const newMatches = [];
+        
+        for (let i = 0; i < winners.length; i += 2) {
+          if (i + 1 < winners.length) {
+            const nextMatch = new Match({
+              bracket: bracket._id,
+              round: nextRound,
+              player1: winners[i],
+              player2: winners[i + 1]
+            });
+            await nextMatch.save();
+            newMatches.push(nextMatch._id);
+          }
+        }
+        
+        // Add new matches to bracket
+        bracket.matches = [...bracket.matches, ...newMatches];
+        await bracket.save();
+      }
+      
+      return await Match.findById(matchId)
+        .populate('bracket')
         .populate('player1')
         .populate('player2')
         .populate('winner');
-    },
-    
-    // Update a match
-    updateMatch: async (_, { id, score1, score2, winnerId, status }) => {
-      const updateData = {};
-      if (score1 !== undefined) updateData.score1 = score1;
-      if (score2 !== undefined) updateData.score2 = score2;
-      if (winnerId !== undefined) updateData.winner = winnerId;
-      if (status !== undefined) updateData.status = status;
-      
-      const match = await Match.findByIdAndUpdate(
-        id,
-        updateData,
-        { new: true }
-      )
-        .populate('tournament')
-        .populate('player1')
-        .populate('player2')
-        .populate('winner');
-      
-      if (!match) {
-        throw new GraphQLError('Match not found', {
-          extensions: { code: 'NOT_FOUND' }
-        });
-      }
-      
-      return match;
-    },
-    
-    // Delete a match
-    deleteMatch: async (_, { id }) => {
-      const match = await Match.findByIdAndDelete(id);
-      if (!match) {
-        throw new GraphQLError('Match not found', {
-          extensions: { code: 'NOT_FOUND' }
-        });
-      }
-      
-      return true;
     }
   }
 };
