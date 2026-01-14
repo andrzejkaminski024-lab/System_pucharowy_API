@@ -287,7 +287,8 @@ const resolvers = {
         });
       }
       
-      // Check if number of participants is a power of 2
+      // Check if number of participants is a power of 2 (2, 4, 8, 16, etc.)
+      // Uses bitwise AND: a power of 2 has only one bit set, so n & (n-1) equals 0
       const isPowerOf2 = (n) => n > 0 && (n & (n - 1)) === 0;
       if (!isPowerOf2(participants.length)) {
         throw new GraphQLError('Number of participants must be a power of 2', {
@@ -361,14 +362,13 @@ const resolvers = {
       await match.save();
       
       // Check if we need to create next round match
-      const bracket = await Bracket.findById(match.bracket._id).populate('matches');
       const currentRoundMatches = await Match.find({
-        bracket: bracket._id,
+        bracket: match.bracket._id,
         round: match.round
       });
       
       // Check if all matches in current round are completed
-      const allCompleted = currentRoundMatches.every(m => m.winner != null);
+      const allCompleted = currentRoundMatches.every(m => m.winner !== null);
       
       if (allCompleted && currentRoundMatches.length > 1) {
         // Create next round matches
@@ -376,22 +376,22 @@ const resolvers = {
         const nextRound = match.round + 1;
         const newMatches = [];
         
+        // Pair winners for next round (winners.length is always even due to power-of-2 constraint)
         for (let i = 0; i < winners.length; i += 2) {
-          if (i + 1 < winners.length) {
-            const nextMatch = new Match({
-              bracket: bracket._id,
-              round: nextRound,
-              player1: winners[i],
-              player2: winners[i + 1]
-            });
-            await nextMatch.save();
-            newMatches.push(nextMatch._id);
-          }
+          const nextMatch = new Match({
+            bracket: match.bracket._id,
+            round: nextRound,
+            player1: winners[i],
+            player2: winners[i + 1]
+          });
+          await nextMatch.save();
+          newMatches.push(nextMatch._id);
         }
         
-        // Add new matches to bracket
-        bracket.matches = [...bracket.matches, ...newMatches];
-        await bracket.save();
+        // Add new matches to bracket using $push for efficiency
+        await Bracket.findByIdAndUpdate(match.bracket._id, {
+          $push: { matches: { $each: newMatches } }
+        });
       }
       
       return await Match.findById(matchId)
