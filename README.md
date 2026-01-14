@@ -1,22 +1,24 @@
 # System Pucharowy API (Tournament Management API)
 
-GraphQL API for managing knockout/cup tournaments with JWT authentication.
+GraphQL API for managing knockout/cup tournaments with JWT authentication built with ASP.NET Core and HotChocolate.
 
 ## Features
 
 - 🔐 User authentication (registration and login) with JWT
-- 🏆 Tournament management (create, read, update, delete)
-- ⚽ Match management (create, read, update, delete)
+- 🏆 Tournament management with lifecycle (upcoming → ongoing → completed)
+- 🎯 Automatic bracket generation with power-of-2 validation
+- ⚽ Match management with automatic round progression
 - 👤 User-specific match queries (get your matches without providing user ID)
-- 📊 GraphQL API with mutations for all operations
+- 📊 GraphQL API with HotChocolate
 
 ## Tech Stack
 
-- Node.js
-- Apollo Server (GraphQL)
-- MongoDB (Mongoose)
-- JWT (JSON Web Tokens)
-- bcryptjs (Password hashing)
+- **Framework**: ASP.NET Core 8.0
+- **GraphQL**: HotChocolate 15.1.11
+- **ORM**: Entity Framework Core 8.0
+- **Database**: SQL Server
+- **Authentication**: JWT Bearer
+- **Password Hashing**: BCrypt.Net-Next
 
 ## Installation
 
@@ -26,44 +28,81 @@ git clone https://github.com/andrzejkaminski024-lab/System_pucharowy_API.git
 cd System_pucharowy_API
 ```
 
-2. Install dependencies:
+2. Update the connection string in `appsettings.json`:
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=TournamentDB;Trusted_Connection=true"
+  }
+}
+```
+
+3. Run Entity Framework migrations:
 ```bash
-npm install
+dotnet ef migrations add InitialCreate
+dotnet ef database update
 ```
 
-3. Set up environment variables:
-Create a `.env` file in the root directory (use `.env.example` as template):
-```
-MONGODB_URI=mongodb://localhost:27017/tournament_db
-JWT_SECRET=your_jwt_secret_key_here
-PORT=4000
-```
-
-4. Start MongoDB (make sure MongoDB is running on your system)
-
-5. Run the server:
+4. Run the application:
 ```bash
-# Development mode with auto-reload
-npm run dev
-
-# Production mode
-npm start
+dotnet run
 ```
 
-The server will start at `http://localhost:4000`
+The GraphQL endpoint will be available at `https://localhost:5001/graphql`
 
-## API Documentation
+## Data Models
+
+### User
+- `Id`: int (primary key)
+- `FirstName`: string
+- `LastName`: string
+- `Email`: string (unique)
+- `Password`: string (hashed with BCrypt)
+
+### Tournament
+- `Id`: int (primary key)
+- `Name`: string
+- `StartDate`: DateTime?
+- `Status`: string (upcoming, ongoing, completed)
+- `Participants`: Collection of Users (many-to-many)
+- `Bracket`: Bracket (1-to-1)
+
+### Bracket
+- `Id`: int (primary key)
+- `TournamentId`: int (foreign key)
+- `Tournament`: Tournament (1-to-1)
+- `Matches`: Collection of Matches (1-to-many)
+
+### Match
+- `Id`: int (primary key)
+- `BracketId`: int (foreign key)
+- `Round`: int
+- `Player1Id`: int (foreign key)
+- `Player2Id`: int (foreign key)
+- `WinnerId`: int? (foreign key, nullable)
+- `Bracket`: Bracket
+- `Player1`: User
+- `Player2`: User
+- `Winner`: User?
+
+## GraphQL API
 
 ### Authentication
 
 #### Register
 ```graphql
 mutation {
-  register(username: "john_doe", email: "john@example.com", password: "password123") {
+  register(
+    firstName: "John"
+    lastName: "Doe"
+    email: "john@example.com"
+    password: "password123"
+  ) {
     token
     user {
       id
-      username
+      firstName
+      lastName
       email
     }
   }
@@ -77,7 +116,8 @@ mutation {
     token
     user {
       id
-      username
+      firstName
+      lastName
       email
     }
   }
@@ -91,24 +131,36 @@ Authorization: Bearer YOUR_TOKEN_HERE
 
 ### Queries
 
-#### Get Current User's Matches (requires authentication)
+#### Get Current User's Matches (requires JWT)
 ```graphql
 query {
   myMatches {
     id
     round
     player1 {
-      id
-      username
+      firstName
+      lastName
     }
     player2 {
-      id
-      username
+      firstName
+      lastName
     }
-    score1
-    score2
-    status
-    matchDate
+    winner {
+      firstName
+      lastName
+    }
+  }
+}
+```
+
+#### Get Current User Info (requires JWT)
+```graphql
+query {
+  me {
+    id
+    firstName
+    lastName
+    email
   }
 }
 ```
@@ -119,50 +171,30 @@ query {
   tournaments {
     id
     name
-    description
-    status
     startDate
-    endDate
-  }
-}
-```
-
-#### Get Specific Tournament
-```graphql
-query {
-  tournament(id: "TOURNAMENT_ID") {
-    id
-    name
-    description
     status
+    participants {
+      firstName
+      lastName
+    }
   }
 }
 ```
 
-#### Get Matches by Tournament
+#### Get Matches for Round
 ```graphql
 query {
-  matchesByTournament(tournamentId: "TOURNAMENT_ID") {
+  getMatchesForRound(bracketId: 1, round: 1) {
     id
     round
     player1 {
-      username
+      firstName
+      lastName
     }
     player2 {
-      username
+      firstName
+      lastName
     }
-    status
-  }
-}
-```
-
-#### Get Current User Info (requires authentication)
-```graphql
-query {
-  me {
-    id
-    username
-    email
   }
 }
 ```
@@ -174,9 +206,7 @@ query {
 mutation {
   createTournament(
     name: "Summer Championship 2024"
-    description: "Annual summer tournament"
     startDate: "2024-07-01"
-    endDate: "2024-07-15"
   ) {
     id
     name
@@ -185,14 +215,24 @@ mutation {
 }
 ```
 
-#### Update Tournament
+#### Add Participant to Tournament
 ```graphql
 mutation {
-  updateTournament(
-    id: "TOURNAMENT_ID"
-    name: "Updated Tournament Name"
-    status: "ongoing"
-  ) {
+  addParticipant(tournamentId: 1, userId: 2) {
+    id
+    name
+    participants {
+      firstName
+      lastName
+    }
+  }
+}
+```
+
+#### Start Tournament
+```graphql
+mutation {
+  startTournament(tournamentId: 1) {
     id
     name
     status
@@ -200,116 +240,114 @@ mutation {
 }
 ```
 
-#### Delete Tournament
+#### Finish Tournament
 ```graphql
 mutation {
-  deleteTournament(id: "TOURNAMENT_ID")
+  finishTournament(tournamentId: 1) {
+    id
+    name
+    status
+  }
 }
 ```
 
-#### Create Match
+#### Generate Bracket
 ```graphql
 mutation {
-  createMatch(
-    tournamentId: "TOURNAMENT_ID"
-    round: "Quarter Final"
-    player1Id: "USER_ID_1"
-    player2Id: "USER_ID_2"
-    matchDate: "2024-07-05"
-  ) {
+  generateBracket(tournamentId: 1) {
+    id
+    matches {
+      round
+      player1 {
+        firstName
+        lastName
+      }
+      player2 {
+        firstName
+        lastName
+      }
+    }
+  }
+}
+```
+
+#### Play Match (sets winner and auto-creates next round)
+```graphql
+mutation {
+  playMatch(matchId: 1, winnerId: 2) {
     id
     round
-    player1 {
-      username
-    }
-    player2 {
-      username
-    }
-    status
-  }
-}
-```
-
-#### Update Match
-```graphql
-mutation {
-  updateMatch(
-    id: "MATCH_ID"
-    score1: 3
-    score2: 1
-    winnerId: "USER_ID_1"
-    status: "completed"
-  ) {
-    id
-    score1
-    score2
     winner {
-      username
+      firstName
+      lastName
     }
-    status
   }
 }
 ```
 
-#### Delete Match
-```graphql
-mutation {
-  deleteMatch(id: "MATCH_ID")
-}
-```
+## Key Features
 
-## Data Models
+### Automatic Bracket Generation
+- Validates that number of participants is a power of 2 (2, 4, 8, 16, etc.)
+- Creates first round matches automatically
+- Pairs participants in bracket structure
 
-### User
-- `id`: Unique identifier
-- `username`: User's username (unique)
-- `email`: User's email (unique)
-- `password`: Hashed password
-- `createdAt`: Account creation timestamp
+### Automatic Round Progression
+- When all matches in a round are completed, the next round is automatically created
+- Winners advance to face each other in the next round
+- Final match determines tournament champion
 
-### Tournament
-- `id`: Unique identifier
-- `name`: Tournament name
-- `description`: Tournament description
-- `startDate`: Start date
-- `endDate`: End date
-- `status`: Tournament status (upcoming, ongoing, completed)
-- `createdBy`: User who created the tournament
-- `createdAt`: Creation timestamp
+### Tournament Lifecycle
+- **upcoming**: Tournament created but not started
+- **ongoing**: Tournament in progress (after `startTournament`)
+- **completed**: Tournament finished (after `finishTournament`)
 
-### Match
-- `id`: Unique identifier
-- `tournament`: Reference to tournament
-- `round`: Match round (e.g., "Quarter Final", "Semi Final", "Final")
-- `player1`: First player
-- `player2`: Second player
-- `score1`: Score of first player
-- `score2`: Score of second player
-- `winner`: Winner of the match
-- `status`: Match status (scheduled, ongoing, completed)
-- `matchDate`: Date of the match
-- `createdAt`: Creation timestamp
+## Testing with Banana Cake Pop
 
-## Security Features
-
-- Password hashing with bcryptjs
-- JWT token-based authentication
-- Token expiration (7 days)
-- Protected routes for user-specific data
-
-## Testing with GraphQL Playground
-
-When the server is running, visit `http://localhost:4000` to access the Apollo Server GraphQL Playground.
+When the server is running, visit `https://localhost:5001/graphql` to access the Banana Cake Pop GraphQL IDE.
 
 To test authenticated queries/mutations:
 1. First, register or login to get a token
-2. Add the token to HTTP headers:
+2. Click on "Headers" and add:
 ```json
 {
   "Authorization": "Bearer YOUR_TOKEN_HERE"
 }
 ```
 3. Execute your queries/mutations
+
+## Project Structure
+
+```
+TournamentAPI/
+├── Models/              # Entity models
+│   ├── User.cs
+│   ├── Tournament.cs
+│   ├── Bracket.cs
+│   └── Match.cs
+├── Data/
+│   └── TournamentDbContext.cs  # EF Core DbContext
+├── GraphQL/             # HotChocolate GraphQL layer
+│   ├── Types/          # GraphQL object types
+│   ├── Queries/        # Query resolvers
+│   └── Mutations/      # Mutation resolvers
+├── Services/            # Business logic
+│   ├── AuthService.cs
+│   └── TournamentService.cs
+├── Program.cs           # Application entry point
+└── appsettings.json     # Configuration
+```
+
+## Security Features
+
+- Password hashing with BCrypt
+- JWT token-based authentication
+- Token expiration (7 days configurable)
+- Protected routes for user-specific data
+
+## Documentation
+
+See `DOTNET_IMPLEMENTATION.md` for detailed implementation documentation.
 
 ## License
 
